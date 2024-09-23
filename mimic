@@ -19,7 +19,7 @@ display_banner() {
     echo "|__|_|  /__|__|_|  /__|\\___  >"
     echo "      \\/         \\/        \\/ "
     echo "                             "
-    echo "    https://github.com/rek7/mimic/"
+    echo "    https://github.com/Dack985/Mimic/"
     echo ""
 }
 
